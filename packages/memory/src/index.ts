@@ -240,6 +240,34 @@ type MastraMessagePart = MastraDBMessage['content']['parts'][number];
 const UPDATE_WORKING_MEMORY_TOOL_NAME = 'updateWorkingMemory';
 
 /**
+ * Gemini signs only the first function call of a parallel step. When that call is a
+ * working-memory call, moving its thought signature to the step's first remaining
+ * tool call keeps the step replayable (see #27231). Existing signatures are kept.
+ */
+function carryThoughtSignatures(removed: MastraMessagePart[], remaining: MastraMessagePart[]): MastraMessagePart[] {
+  type SignableMetadata = Record<string, Record<string, unknown> | undefined>;
+  const metadataOf = (part: MastraMessagePart) => (part as { providerMetadata?: SignableMetadata }).providerMetadata;
+
+  const target = remaining.findIndex(part => part?.type === 'tool-invocation');
+  if (target === -1) return remaining;
+
+  const original = metadataOf(remaining[target]!);
+  let providerMetadata = original;
+  for (const part of removed) {
+    for (const [provider, value] of Object.entries(metadataOf(part) ?? {})) {
+      const thoughtSignature = value?.thoughtSignature;
+      if (thoughtSignature === undefined || providerMetadata?.[provider]?.thoughtSignature !== undefined) continue;
+      providerMetadata = { ...providerMetadata, [provider]: { ...providerMetadata?.[provider], thoughtSignature } };
+    }
+  }
+  if (providerMetadata === original) return remaining;
+
+  const result = [...remaining];
+  result[target] = { ...remaining[target], providerMetadata } as MastraMessagePart;
+  return result;
+}
+
+/**
  * Removes `updateWorkingMemory` tool invocations from stored message parts, one step
  * at a time. A step starts at a `step-start` part, or where a tool part is followed by
  * a non-tool part (the same boundary prompt conversion uses when markers are missing).
@@ -272,7 +300,7 @@ function removeWorkingMemoryToolInvocationParts(parts: MastraMessagePart[]): Mas
         part?.type === 'reasoning' ||
         (part?.type === 'text' && !removeWorkingMemoryTags(part.text ?? '').trim()),
     );
-    return onlyReasoningLeft ? [] : remaining;
+    return onlyReasoningLeft ? [] : carryThoughtSignatures(step.filter(isWorkingMemoryCall), remaining);
   });
 }
 

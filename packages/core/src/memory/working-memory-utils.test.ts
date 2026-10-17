@@ -313,6 +313,71 @@ describe('removeWorkingMemoryToolInvocationParts', () => {
     ]);
   });
 
+  it('moves the thought signature of a removed call to the first remaining call of the step', () => {
+    const signed = (part: MastraMessagePart, provider = 'google'): MastraMessagePart => ({
+      ...part,
+      providerMetadata: { [provider]: { thoughtSignature: 'sig-1' } },
+    });
+    expect(
+      removeWorkingMemoryToolInvocationParts([
+        { type: 'step-start' },
+        signed(call('wm', 'updateWorkingMemory')),
+        call('replies', 'suggestReplies'),
+        call('weather', 'lookupWeather'),
+        { type: 'step-start' },
+        { type: 'text', text: 'Done' },
+      ]),
+    ).toEqual([
+      { type: 'step-start' },
+      signed(call('replies', 'suggestReplies')),
+      call('weather', 'lookupWeather'),
+      { type: 'step-start' },
+      { type: 'text', text: 'Done' },
+    ]);
+  });
+
+  it('keeps an existing signature and other metadata on the remaining call', () => {
+    const wm: MastraMessagePart = {
+      ...call('wm', 'updateWorkingMemory'),
+      providerMetadata: { google: { thoughtSignature: 'sig-wm' }, vertex: { thoughtSignature: 'sig-wm' } },
+    };
+    const other: MastraMessagePart = {
+      ...call('other', 'lookupWeather'),
+      providerMetadata: { google: { thoughtSignature: 'sig-other' }, vertex: { cached: true } },
+    };
+    expect(removeWorkingMemoryToolInvocationParts([{ type: 'step-start' }, wm, other])).toEqual([
+      { type: 'step-start' },
+      {
+        ...call('other', 'lookupWeather'),
+        providerMetadata: {
+          google: { thoughtSignature: 'sig-other' },
+          vertex: { cached: true, thoughtSignature: 'sig-wm' },
+        },
+      },
+    ]);
+  });
+
+  it('does not move a signature into another step', () => {
+    const wm: MastraMessagePart = {
+      ...call('wm', 'updateWorkingMemory'),
+      providerMetadata: { google: { thoughtSignature: 'sig-wm' } },
+    };
+    expect(
+      removeWorkingMemoryToolInvocationParts([
+        { type: 'step-start' },
+        { type: 'text', text: 'Saving' },
+        wm,
+        { type: 'step-start' },
+        call('other', 'lookupWeather'),
+      ]),
+    ).toEqual([
+      { type: 'step-start' },
+      { type: 'text', text: 'Saving' },
+      { type: 'step-start' },
+      call('other', 'lookupWeather'),
+    ]);
+  });
+
   it('leaves state-signal setWorkingMemory calls alone', () => {
     const parts: MastraMessagePart[] = [{ type: 'step-start' }, reasoning, call('wm', 'setWorkingMemory')];
     expect(removeWorkingMemoryToolInvocationParts(parts)).toBe(parts);

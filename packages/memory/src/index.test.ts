@@ -663,6 +663,39 @@ describe('Memory', () => {
     });
   });
 
+  describe('Gemini thought signatures on removed updateWorkingMemory calls (#27231)', () => {
+    const memory = new TestableMemory();
+    const toolInvocation = (toolCallId: string, toolName: string, thoughtSignature?: string) => ({
+      type: 'tool-invocation' as const,
+      toolInvocation: { state: 'result' as const, toolCallId, toolName, args: {}, result: { success: true } },
+      ...(thoughtSignature ? { providerMetadata: { google: { thoughtSignature } } } : {}),
+    });
+
+    it('moves the signature to the first remaining call of the parallel step', () => {
+      const parts: MastraDBMessage['content']['parts'] = [
+        { type: 'step-start' },
+        toolInvocation('wm', 'updateWorkingMemory', 'sig-1'),
+        toolInvocation('replies', 'suggestReplies'),
+      ];
+      const result = memory.testUpdateMessageToHideWorkingMemoryV2({
+        id: 'assistant-1',
+        role: 'assistant',
+        createdAt: new Date('2026-01-01T00:00:01Z'),
+        content: {
+          format: 2,
+          parts,
+          toolInvocations: parts.flatMap(part => (part.type === 'tool-invocation' ? [part.toolInvocation] : [])),
+        },
+      });
+
+      expect(result?.content.parts).toEqual([
+        { type: 'step-start' },
+        toolInvocation('replies', 'suggestReplies', 'sig-1'),
+      ]);
+      expect(result?.content.toolInvocations?.map(invocation => invocation.toolName)).toEqual(['suggestReplies']);
+    });
+  });
+
   describe('saveMessages with empty parts array (issue #13824)', () => {
     let memory: Memory;
 
