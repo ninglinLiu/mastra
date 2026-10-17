@@ -97,6 +97,21 @@ class TransformerTestBuilder {
     return this;
   }
 
+  addModelStepSpan(config: { spanId: string; parentSpanId: string; startedAt?: string }) {
+    const span = {
+      traceId: this.traceId,
+      spanId: config.spanId,
+      parentSpanId: config.parentSpanId,
+      name: `model_step: ${config.spanId}`,
+      spanType: 'model_step',
+      startedAt: config.startedAt || '2025-01-01T00:01:30Z',
+      input: {},
+      output: {},
+    };
+    this.spans.push(span);
+    return this;
+  }
+
   addToolSpan(config: {
     spanId: string;
     parentSpanId: string;
@@ -104,13 +119,14 @@ class TransformerTestBuilder {
     input?: any;
     output?: any;
     startedAt?: string;
+    spanType?: 'tool_call' | 'mcp_tool_call';
   }) {
     const span = {
       traceId: this.traceId,
       spanId: config.spanId,
       parentSpanId: config.parentSpanId,
       name: `tool: ${config.toolId || 'test-tool'}`,
-      spanType: 'tool_call',
+      spanType: config.spanType || 'tool_call',
       startedAt: config.startedAt || '2025-01-01T00:02:00Z',
       input: config.input || { query: 'test' },
       output: config.output || { result: 'success' },
@@ -174,9 +190,13 @@ class TransformerTestScenarios {
           { role: 'user', content: 'What is the weather?' },
         ],
       })
+      .addModelStepSpan({
+        spanId: 'step-1',
+        parentSpanId: 'llm-1',
+      })
       .addToolSpan({
         spanId: 'tool-1',
-        parentSpanId: 'agent-1',
+        parentSpanId: 'step-1',
         toolId: 'weatherAPI',
         input: { location: 'Seattle' },
         output: { temperature: 72, condition: 'sunny' },
@@ -380,7 +400,7 @@ describe('Transformer Functions', () => {
       expect(getTextContent(result.output[0]!)).toBe('I am doing well, thank you!');
     });
 
-    it('should include tool invocations in response', () => {
+    it('should include tool invocations from nested spans', () => {
       const trace = TransformerTestScenarios.agentWithToolCalls().buildTrace();
       const result = transformTraceToScorerInputAndOutput(trace);
 
@@ -390,6 +410,195 @@ describe('Transformer Functions', () => {
 
       // @ts-expect-error - result property exists when state is 'result'
       expect(result.output[0]?.content.toolInvocations?.[0]?.result).toEqual({ temperature: 72, condition: 'sunny' });
+    });
+
+    it('should find tool spans nested under model_generation > model_step', () => {
+      const trace = new TransformerTestBuilder()
+        .addAgentSpan({
+          spanId: 'agent-1',
+          input: [{ role: 'user', content: 'Get weather' }],
+          output: { text: 'Done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-1',
+          parentSpanId: 'agent-1',
+        })
+        .addModelStepSpan({
+          spanId: 'step-1',
+          parentSpanId: 'llm-1',
+        })
+        .addToolSpan({
+          spanId: 'tool-1',
+          parentSpanId: 'step-1',
+          toolId: 'nestedTool',
+          input: { test: 'data' },
+          output: { result: 'found' },
+        })
+        .buildTrace();
+
+      const result = transformTraceToScorerInputAndOutput(trace);
+
+      expect(result.output[0]?.content.toolInvocations).toHaveLength(1);
+      expect(result.output[0]?.content.toolInvocations?.[0]?.toolName).toBe('nestedTool');
+      // @ts-expect-error - result property exists when state is 'result'
+      expect(result.output[0]?.content.toolInvocations?.[0]?.result).toEqual({ result: 'found' });
+    });
+
+    it('should collect multiple tools across different model steps in time order', () => {
+      const trace = new TransformerTestBuilder()
+        .addAgentSpan({
+          spanId: 'agent-1',
+          input: [{ role: 'user', content: 'Multi-step task' }],
+          output: { text: 'All done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-1',
+          parentSpanId: 'agent-1',
+        })
+        .addModelStepSpan({
+          spanId: 'step-1',
+          parentSpanId: 'llm-1',
+          startedAt: '2025-01-01T00:01:00Z',
+        })
+        .addToolSpan({
+          spanId: 'tool-1',
+          parentSpanId: 'step-1',
+          toolId: 'firstTool',
+          startedAt: '2025-01-01T00:01:10Z',
+        })
+        .addModelStepSpan({
+          spanId: 'step-2',
+          parentSpanId: 'llm-1',
+          startedAt: '2025-01-01T00:02:00Z',
+        })
+        .addToolSpan({
+          spanId: 'tool-2',
+          parentSpanId: 'step-2',
+          toolId: 'secondTool',
+          startedAt: '2025-01-01T00:02:10Z',
+        })
+        .addToolSpan({
+          spanId: 'tool-3',
+          parentSpanId: 'step-2',
+          toolId: 'thirdTool',
+          startedAt: '2025-01-01T00:02:20Z',
+        })
+        .buildTrace();
+
+      const result = transformTraceToScorerInputAndOutput(trace);
+
+      expect(result.output[0]?.content.toolInvocations).toHaveLength(3);
+      expect(result.output[0]?.content.toolInvocations?.[0]?.toolName).toBe('firstTool');
+      expect(result.output[0]?.content.toolInvocations?.[1]?.toolName).toBe('secondTool');
+      expect(result.output[0]?.content.toolInvocations?.[2]?.toolName).toBe('thirdTool');
+    });
+
+    it('should exclude tools from nested sub-agent spans', () => {
+      const trace = new TransformerTestBuilder()
+        .addAgentSpan({
+          spanId: 'root-agent',
+          input: [{ role: 'user', content: 'Parent task' }],
+          output: { text: 'Parent done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-1',
+          parentSpanId: 'root-agent',
+        })
+        .addModelStepSpan({
+          spanId: 'step-1',
+          parentSpanId: 'llm-1',
+        })
+        .addToolSpan({
+          spanId: 'tool-1',
+          parentSpanId: 'step-1',
+          toolId: 'parentTool',
+        })
+        // Add a nested sub-agent with its own tools
+        .addAgentSpan({
+          spanId: 'sub-agent',
+          parentSpanId: 'root-agent',
+          input: [{ role: 'user', content: 'Sub task' }],
+          output: { text: 'Sub done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-2',
+          parentSpanId: 'sub-agent',
+        })
+        .addModelStepSpan({
+          spanId: 'step-2',
+          parentSpanId: 'llm-2',
+        })
+        .addToolSpan({
+          spanId: 'tool-2',
+          parentSpanId: 'step-2',
+          toolId: 'subAgentTool',
+        })
+        .buildTrace();
+
+      const result = transformTraceToScorerInputAndOutput(trace);
+
+      // Should only find the parent agent's tool, not the sub-agent's tool
+      expect(result.output[0]?.content.toolInvocations).toHaveLength(1);
+      expect(result.output[0]?.content.toolInvocations?.[0]?.toolName).toBe('parentTool');
+    });
+
+    it('should handle MCP tool call spans', () => {
+      const trace = new TransformerTestBuilder()
+        .addAgentSpan({
+          spanId: 'agent-1',
+          input: [{ role: 'user', content: 'Use MCP tool' }],
+          output: { text: 'MCP done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-1',
+          parentSpanId: 'agent-1',
+        })
+        .addModelStepSpan({
+          spanId: 'step-1',
+          parentSpanId: 'llm-1',
+        })
+        .addToolSpan({
+          spanId: 'tool-1',
+          parentSpanId: 'step-1',
+          toolId: 'mcpTool',
+          spanType: 'mcp_tool_call',
+          input: { mcpParam: 'test' },
+          output: { mcpResult: 'success' },
+        })
+        .buildTrace();
+
+      const result = transformTraceToScorerInputAndOutput(trace);
+
+      expect(result.output[0]?.content.toolInvocations).toHaveLength(1);
+      expect(result.output[0]?.content.toolInvocations?.[0]?.toolName).toBe('mcpTool');
+      expect(result.output[0]?.content.toolInvocations?.[0]?.args).toEqual({ mcpParam: 'test' });
+      // @ts-expect-error - result property exists when state is 'result'
+      expect(result.output[0]?.content.toolInvocations?.[0]?.result).toEqual({ mcpResult: 'success' });
+    });
+
+    it('should support legacy direct-child tool spans for backwards compatibility', () => {
+      // Some old traces may have tools directly under agent_run
+      const trace = new TransformerTestBuilder()
+        .addAgentSpan({
+          spanId: 'agent-1',
+          input: [{ role: 'user', content: 'Legacy trace' }],
+          output: { text: 'Done', files: [] },
+        })
+        .addLLMSpan({
+          spanId: 'llm-1',
+          parentSpanId: 'agent-1',
+        })
+        .addToolSpan({
+          spanId: 'tool-1',
+          parentSpanId: 'agent-1', // Direct child of agent_run
+          toolId: 'legacyTool',
+        })
+        .buildTrace();
+
+      const result = transformTraceToScorerInputAndOutput(trace);
+
+      expect(result.output[0]?.content.toolInvocations).toHaveLength(1);
+      expect(result.output[0]?.content.toolInvocations?.[0]?.toolName).toBe('legacyTool');
     });
 
     it('should include both tool invocation and text parts', () => {

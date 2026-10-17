@@ -194,10 +194,41 @@ function extractRememberedMessages(llmSpan: SpanRecord, currentInputContent: str
 }
 
 /**
+ * Recursively collect all tool spans (TOOL_CALL and MCP_TOOL_CALL) that are descendants
+ * of the given parent span, excluding any tools nested under sub-agent spans.
+ * Returns spans sorted by startedAt timestamp.
+ */
+function collectToolSpansRecursive(spanTree: SpanTree, parentSpanId: string, excludeNestedAgents = true): SpanRecord[] {
+  const toolSpans: SpanRecord[] = [];
+  const children = spanTree.childrenMap.get(parentSpanId) || [];
+
+  for (const child of children) {
+    // If this is a nested agent_run and we're excluding nested agents, don't descend
+    if (excludeNestedAgents && child.spanType === SpanType.AGENT_RUN) {
+      continue;
+    }
+
+    // If this is a tool span, collect it
+    if (child.spanType === SpanType.TOOL_CALL || child.spanType === SpanType.MCP_TOOL_CALL) {
+      toolSpans.push(child);
+    }
+
+    // Recursively collect from children
+    const descendantTools = collectToolSpansRecursive(spanTree, child.spanId, excludeNestedAgents);
+    toolSpans.push(...descendantTools);
+  }
+
+  // Sort by startedAt timestamp to maintain temporal ordering
+  toolSpans.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
+
+  return toolSpans;
+}
+
+/**
  * Reconstruct tool invocations from tool call spans
  */
 function reconstructToolInvocations(spanTree: SpanTree, parentSpanId: string) {
-  const toolSpans = getChildrenOfType<SpanRecord>(spanTree, parentSpanId, SpanType.TOOL_CALL);
+  const toolSpans = collectToolSpansRecursive(spanTree, parentSpanId);
 
   return toolSpans.map(toolSpan => ({
     toolCallId: toolSpan.spanId,
