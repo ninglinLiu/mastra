@@ -924,7 +924,7 @@ describe('A2A Handler', () => {
         requestContext: new RequestContext(),
       });
 
-      // Because the a2a spec requires the server to create the the taskId, we don't know the id
+      // Because the a2a spec requires the server to create the taskId, we don't know the id
       // to query the store with, so we just check the internal store directly
       const store = Array.from((mockTaskStore as any).store.values());
       expect(store.length).toBe(1);
