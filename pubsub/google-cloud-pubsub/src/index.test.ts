@@ -2308,7 +2308,7 @@ describe.sequential('Workflow', () => {
       });
     });
 
-    it('should execute a a sleep step', async () => {
+    it('should execute a sleep step', async () => {
       const execute = vi.fn<any>().mockResolvedValue({ result: 'success' });
       const step1 = createStep({
         id: 'step1',
@@ -2371,7 +2371,7 @@ describe.sequential('Workflow', () => {
       await mastra.stopEventEngine();
     });
 
-    it('should execute a a sleep until step', async () => {
+    it('should execute a sleep until step', async () => {
       const execute = vi.fn<any>().mockResolvedValue({ result: 'success' });
       const step1 = createStep({
         id: 'step1',

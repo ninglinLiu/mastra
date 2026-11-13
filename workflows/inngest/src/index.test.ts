@@ -1799,7 +1799,7 @@ describe('MastraInngestWorkflow', () => {
       srv.close();
     });
 
-    it('should execute a a sleep until step', async ctx => {
+    it('should execute a sleep until step', async ctx => {
       const inngest = new Inngest({
         id: 'mastra',
         baseUrl: `http://localhost:${(ctx as any).inngestPort}`,
